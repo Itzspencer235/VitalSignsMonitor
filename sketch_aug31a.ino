@@ -27,7 +27,7 @@ bool buzzerMuted = false;
 bool previousAlarmState = false;
 bool lastButtonState = HIGH; // For button debouncing (HIGH = not pressed)
 unsigned long lastButtonPress = 0;
-const char* aws_endpoint = "a1t4z1928sw433-ats.iot.ap-southeast-2.amazonaws.com";
+const char* aws_endpoint = ".......";
 const char* thing_name = "ESP32Device";
 const char* certificatePemCrt = "-----BEGIN CERTIFICATE-----\n"
 
