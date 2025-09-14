@@ -17,27 +17,29 @@
 #define REPORTING_PERIOD_MS 1000
 #define RESET_BUTTON 23
 #define WIFI_STATUS_LED 2
-#define MUTE_BUTTON 39
+
 #define EMERGENCY_BUTTON 15 
 #define PHONE_INPUT_TIMEOUT_MS 10000
 #define SERIAL_BUFFER_MAX 50
-#define MQTT_MAX_PACKET_SIZE 1024
+#define MQTT_MAX_PACKET_SIZE 4096
 #define BUTTON_DEBOUNCE_MS 50 // Debounce time for button
 bool buzzerMuted = false;
 bool previousAlarmState = false;
 bool lastButtonState = HIGH; // For button debouncing (HIGH = not pressed)
 unsigned long lastButtonPress = 0;
-const char* aws_endpoint = "......";
+
+
+const char*patientId="A1B2C";
+const char* aws_endpoint = "";
 const char* thing_name = "ESP32Device";
 const char* certificatePemCrt = "-----BEGIN CERTIFICATE-----\n"
-
+                               "
                                 "-----END CERTIFICATE-----\n";
     const char* privateKey = "-----BEGIN RSA PRIVATE KEY-----\n"
-                         ;
+                       
      const char* rootCA = "-----BEGIN CERTIFICATE-----\n"
-                    
+                   
                      "-----END CERTIFICATE-----\n";
-
 String phoneNumber = "";
 const int MAX_PHONE_LENGTH = 13;
 const int MIN_PHONE_LENGTH = 9;
@@ -63,14 +65,14 @@ DallasTemperature ds18b20(&oneWire);
 #define TEMP_MIN 20.0
 #define TEMP_MAX 37.0
 #define HUMIDITY_MIN 30.0
-#define HUMIDITY_MAX 65
-#define ECG_BUFFER_SIZE 50
+#define HUMIDITY_MAX 80
+#define ECG_BUFFER_SIZE 250
 float ecgBuffer[ECG_BUFFER_SIZE];
 uint8_t ecgBufferIndex = 0;
-const uint32_t ECG_SAMPLE_INTERVAL_MS = 20;
+const uint32_t ECG_SAMPLE_INTERVAL_MS = 4;
 uint32_t lastEcgSampleTime = 0;
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 7200, 60000);
 
 String serialBuffer = "";
 float bpm = 0;
@@ -296,7 +298,11 @@ void publishToAWS(float dhtTemp, float humidity, float ds18b20Temp, float ecgVal
       Serial.println("AWS client connected, preparing payload...");
       client.loop();
       delay(50);
-      StaticJsonDocument<512> doc;
+      if (ecgBuffer[0] == -1) {  // Sample check for leads off
+        Serial.println("Leads off, skipping publish");
+        return;
+      }
+      StaticJsonDocument<4096> doc;
       timeClient.update();
       unsigned long epochTime = timeClient.getEpochTime();
       char isoTime[25];
@@ -316,8 +322,12 @@ void publishToAWS(float dhtTemp, float humidity, float ds18b20Temp, float ecgVal
         ecgData.add(ecgBuffer[index]);
       }
       doc["alarm"] = alarmCondition;
-      char payload[512];
-      size_t payloadSize = serializeJson(doc, payload);
+      char payload[4096];
+      size_t payloadSize = serializeJson(doc, payload, sizeof(payload));
+      if (payloadSize == 0) {
+        Serial.println("Failed to serialize JSON");
+        return;
+      }
       Serial.print("Payload size: ");
       Serial.println(payloadSize);
       Serial.print("Payload: ");
@@ -452,7 +462,18 @@ void loop() {
   if (millis() - lastEcgSampleTime >= ECG_SAMPLE_INTERVAL_MS) {
     bool loPlus = digitalRead(LO_PLUS);
     bool loMinus = digitalRead(LO_MINUS);
-    float ecgValue = (loPlus || loMinus) ? -1 : analogRead(ECG_PIN) * (3.3 / 4095.0);
+    float ecgValue = 0.0;
+    if (loPlus || loMinus) {
+      ecgValue = -1;  // Leads off
+    } else {
+      // Simple 3-sample average filter to reduce noise
+      float sum = 0;
+      for (int i = 0; i < 3; i++) {
+        sum += analogRead(ECG_PIN) * (3.3 / 4095.0);
+        delayMicroseconds(100);  // Small delay for stability
+      }
+      ecgValue = sum / 3.0;
+    }
     ecgBuffer[ecgBufferIndex] = ecgValue;
     ecgBufferIndex = (ecgBufferIndex + 1) % ECG_BUFFER_SIZE;
     lastEcgSampleTime = millis();
@@ -500,11 +521,13 @@ void loop() {
     }
     digitalWrite(LED_PIN, HIGH);
     if (!smsSent) {
-      String message = "T:" + String(dhtTemp != -1 ? dhtTemp : 0.0, 1) + "C,H:" + 
-                       String(humidity != -1 ? humidity : 0.0, 1) + "%,DS18:" + 
-                       String(ds18b20Temp != -1 ? ds18b20Temp : 0.0, 1) + "C,BPM:" + 
-                       String(bpm, 0) + ",SpO2:" + String(spo2, 0) + "%,ECG:" + 
-                       String(ecgValue != -1 ? ecgValue : 0.0, 2) + "V,Alarm:" + alarmReason;
+      String message = String("Dear Dr, there is critical with patient ") + patientId +
+                 ", " + alarmReason + " full data: T:" +
+                 String(dhtTemp != -1 ? dhtTemp : 0.0, 1) + "C,H:" +
+                 String(humidity != -1 ? humidity : 0.0, 1) + "%,BP:" +
+                       String(ds18b20Temp != -1 ? ds18b20Temp : 0.0, 1) + "C,BPM:" +
+                       String(bpm, 0) + ",SpO2:" + String(spo2, 0) + "%,ECG:" +
+                       String(ecgValue != -1 ? ecgValue : 0.0, 2) + "V";
       if (sendSMS(message)) {
         smsSent = true;
       }
